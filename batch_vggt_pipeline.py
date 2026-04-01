@@ -1,0 +1,307 @@
+"""
+Fetch Studio X Lowes scan-artifacts JSON, download the scan video, extract frames,
+and run VGGT-SLAM (main.py).
+
+Frames are sampled with OpenCV (``cv2``) at a fixed output frame rate.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import cv2
+import requests
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+# Default thresholds for main.py
+_DEFAULT_CONF_THRESHOLD = 10.0
+_DEFAULT_MIN_DISPARITY = 10.0
+_FPS = 2.0
+# Second attempt after main.py fails on the default thresholds.
+_SLAM_RETRY_CONF_THRESHOLD = 50.0
+_SLAM_RETRY_MIN_DISPARITY = 20.0
+
+
+def _run_slam_subprocess(
+    main_py: Path,
+    images_dir: Path,
+    out_dir: Path,
+    project_id: str,
+    *,
+    conf_threshold: float,
+    min_disparity: float,
+) -> None:
+    slam = subprocess.run(
+        [
+            "python3",
+            str(main_py),
+            "--image_folder",
+            str(images_dir),
+            "--max_loops",
+            "1",
+            "--vis_map",
+            "--log_results",
+            "--submap_size",
+            "200",
+            "--min_disparity",
+            str(min_disparity),
+            "--conf_threshold",
+            str(conf_threshold),
+            "--log_path",
+            str(out_dir / f"{project_id}_poses.txt"),
+        ],
+        cwd=str(REPO_ROOT),
+    )
+    if slam.returncode != 0:
+        raise RuntimeError(f"main.py exited with code {slam.returncode}")
+
+
+def _project_id_from_scan_artifacts_url(url: str) -> str:
+    parsed = urlparse(url)
+    q = parse_qs(parsed.query)
+    ids = q.get("projectId") or []
+    if not ids or not ids[0]:
+        raise ValueError("URL must include a projectId query parameter, e.g. ...?projectId=PRJ-XXXX")
+    return ids[0]
+
+
+def _first_video_url(payload: dict[str, Any]) -> str:
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        raise ValueError("API response has no data entries")
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        v = item.get("video")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    raise ValueError("No non-empty video URL in data")
+
+
+def _extract_frames_cv2(
+    video_file: Path,
+    out_dir: Path,
+    fps_out: float,
+    *,
+    start_s: float = 0.0,
+) -> list[Path]:
+    """
+    Sample frames from ``video_file`` at ``fps_out`` Hz, writing ``000000.png``, …
+    Timestamps are ``start_s + k / fps_out``; source frame index is
+    ``round(t * video_fps)`` (same idea as ``_extract_frame_batch``).
+    """
+    cap = cv2.VideoCapture(str(video_file))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_file}")
+
+    video_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if video_fps <= 0:
+        video_fps = 30.0
+
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if frame_count > 0:
+        max_time = start_s + (frame_count - 1) / video_fps
+    else:
+        max_time = float("inf")
+
+    written: list[Path] = []
+    k = 0
+    while True:
+        t_v = start_s + k / fps_out
+        if frame_count > 0 and t_v > max_time + 1e-6:
+            break
+
+        idx = int(round(t_v * video_fps))
+        if frame_count > 0:
+            idx = min(max(idx, 0), frame_count - 1)
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok:
+            if not written:
+                raise RuntimeError(f"No frames read from {video_file}")
+            break
+
+        fname = out_dir / f"{k:06d}.png"
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        cv2.imwrite(str(fname), frame)
+        written.append(fname)
+        k += 1
+
+    cap.release()
+    if not written:
+        raise RuntimeError(f"No frames extracted from {video_file}")
+    return written
+
+
+def run_studiox_scan_pipeline(
+    api_url: str,
+    *,
+    base_output_dir: Path | None = None,
+    extract_fps: float = _FPS,
+    skip_slam: bool = False,
+    conf_threshold: float = _DEFAULT_CONF_THRESHOLD,
+    min_disparity: float = _DEFAULT_MIN_DISPARITY,
+) -> dict[str, Path | str | bool]:
+    """
+    1. GET ``api_url`` (scan-artifacts JSON).
+    2. Download ``data[*].video`` (first artifact with a video URL).
+    3. Save under ``{timestamp}_{projectId}/`` (``projectId`` from the URL query).
+    4. Extract frames at ``extract_fps`` into ``images/`` under that folder.
+    5. Run ``main.py`` from the repo root with ``--vis_map``, logging, and SLAM hyperparameters
+       (see implementation for the full argument list). Poses and related logs are written under
+       the project folder via ``--log_path <project_dir>/poses.txt``.
+
+    Parameters
+    ----------
+    api_url
+        e.g. ``https://api.studioxlowes.com/spatial/v1/scan-artifacts?projectId=PRJ-Q2W9SL836``
+    base_output_dir
+        Parent directory for ``{timestamp}_{projectId}``. Defaults to the current working directory.
+    extract_fps
+        Target sampling rate in Hz for frame extraction with OpenCV (default 2).
+    skip_slam
+        If True, only download video and extract frames.
+    conf_threshold, min_disparity
+        Passed to ``main.py``. If the first SLAM run fails, one retry uses
+        ``conf_threshold`` 25 and ``min_disparity`` 20.
+
+    Returns
+    -------
+    dict with keys: ``output_dir``, ``video_path``, ``images_dir``, ``project_id``,
+    and ``slam_retried`` (True if the first SLAM run failed and the retry succeeded).
+    """
+    project_id = _project_id_from_scan_artifacts_url(api_url)
+    parent = (base_output_dir or Path.cwd()).resolve()
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_dir = parent / f"{ts}_{project_id}"
+    images_dir = out_dir / "images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    r = requests.get(api_url, timeout=120)
+    r.raise_for_status()
+    payload = r.json()
+    video_url = _first_video_url(payload)
+    print(video_url)
+
+    video_name = Path(urlparse(video_url).path).name or "scan_video.mp4"
+    video_path = out_dir / video_name
+    with requests.get(video_url, stream=True, timeout=600) as vr:
+        vr.raise_for_status()
+        with open(video_path, "wb") as f:
+            for chunk in vr.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+
+    _extract_frames_cv2(video_path, images_dir, extract_fps)
+
+    slam_retried = False
+    if not skip_slam:
+        main_py = REPO_ROOT / "main.py"
+        if not main_py.is_file():
+            raise FileNotFoundError(f"main.py not found at {main_py}")
+
+        try:
+            _run_slam_subprocess(
+                main_py,
+                images_dir,
+                out_dir,
+                project_id,
+                conf_threshold=conf_threshold,
+                min_disparity=min_disparity,
+            )
+        except RuntimeError as e:
+            print(
+                f"SLAM failed ({e}); retrying with "
+                f"conf_threshold={_SLAM_RETRY_CONF_THRESHOLD}, "
+                f"min_disparity={_SLAM_RETRY_MIN_DISPARITY} …",
+                flush=True,
+            )
+            _run_slam_subprocess(
+                main_py,
+                images_dir,
+                out_dir,
+                project_id,
+                conf_threshold=_SLAM_RETRY_CONF_THRESHOLD,
+                min_disparity=_SLAM_RETRY_MIN_DISPARITY,
+            )
+            slam_retried = True
+
+    return {
+        "output_dir": out_dir,
+        "video_path": video_path,
+        "images_dir": images_dir,
+        "project_id": project_id,
+        "slam_retried": slam_retried,
+    }
+
+
+def _iter_scan_artifact_urls(links_file: Path) -> list[str]:
+    """Return non-empty, non-``#`` comment lines from a text file."""
+    if not links_file.is_file():
+        raise FileNotFoundError(f"Links file not found: {links_file}")
+    out: list[str] = []
+    for line in links_file.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    if not out:
+        raise ValueError(f"No scan-artifact URLs in {links_file}")
+    return out
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(
+            "Usage: python3 studiox_scan_pipeline.py <links.txt>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    links_path = Path(sys.argv[1]).expanduser().resolve()
+    urls = _iter_scan_artifact_urls(links_path)
+    succeeded_first: list[str] = []
+    succeeded_after_retry: list[str] = []
+    failed: list[str] = []
+
+    for i, url in enumerate(urls):
+        print(f"[{i + 1}/{len(urls)}] {url}", flush=True)
+        try:
+            result = run_studiox_scan_pipeline(url)
+            print(result, flush=True)
+            if result.get("slam_retried"):
+                succeeded_after_retry.append(url)
+            else:
+                succeeded_first.append(url)
+        except Exception as e:
+            failed.append(url)
+            print(f"Failed: {e}", file=sys.stderr, flush=True)
+
+    print("\n=== Summary ===", flush=True)
+    print(
+        f"Succeeded on first try ({len(succeeded_first)}):",
+        flush=True,
+    )
+    for u in succeeded_first:
+        print(f"  {u}", flush=True)
+    print(
+        f"\nSucceeded after SLAM retry "
+        f"(conf_threshold={_SLAM_RETRY_CONF_THRESHOLD}, "
+        f"min_disparity={_SLAM_RETRY_MIN_DISPARITY}) ({len(succeeded_after_retry)}):",
+        flush=True,
+    )
+    for u in succeeded_after_retry:
+        print(f"  {u}", flush=True)
+    print(f"\nFailed ({len(failed)}):", flush=True)
+    for u in failed:
+        print(f"  {u}", flush=True)
+
+    if failed:
+        sys.exit(1)

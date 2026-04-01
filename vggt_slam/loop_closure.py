@@ -11,6 +11,18 @@ from salad.eval import load_model # load salad
 
 device = 'cuda'
 
+# Official SALAD release weights (same URL as serizba/salad torch.hub)
+_SALAD_CKPT_URL = (
+    "https://github.com/serizba/salad/releases/download/v1.0.0/dino_salad.ckpt"
+)
+
+
+def _ensure_salad_checkpoint(ckpt_pth: str) -> None:
+    if os.path.isfile(ckpt_pth):
+        return
+    os.makedirs(os.path.dirname(ckpt_pth), exist_ok=True)
+    torch.hub.download_url_to_file(_SALAD_CKPT_URL, ckpt_pth)
+
 tensor_transform = T.ToPILImage()
 denormalize = T.Normalize(mean=[-1, -1, -1], std=[2, 2, 2])
 
@@ -53,6 +65,7 @@ class ImageRetrieval:
     def __init__(self, input_size=224):
 
         ckpt_pth = os.path.join(torch.hub.get_dir(), "checkpoints/dino_salad.ckpt")
+        _ensure_salad_checkpoint(ckpt_pth)
         self.model = load_model(ckpt_pth)
         self.model.eval()
         self.transform = input_transform((input_size, input_size))

@@ -1,6 +1,9 @@
 """
-Fetch Studio X Lowes scan-artifacts JSON, download the scan video, extract frames,
+Fetch Studio X Lowes scan-artifacts JSON (optional), download the scan video, extract frames,
 and run VGGT-SLAM (main.py).
+
+Use :func:`download_studiox_scan_video` when starting from an API URL; use
+:func:`run_studiox_scan_pipeline` with a local video path when the file is already on disk.
 
 Frames are sampled with OpenCV (``cv2``) at a fixed output frame rate.
 """
@@ -45,8 +48,9 @@ def _run_slam_subprocess(
             str(images_dir),
             "--max_loops",
             "1",
-            "--vis_map",
+            #"--vis_map",
             "--log_results",
+            "--skip_dense_log",
             "--submap_size",
             "200",
             "--min_disparity",
@@ -140,23 +144,15 @@ def _extract_frames_cv2(
     return written
 
 
-def run_studiox_scan_pipeline(
+def download_studiox_scan_video(
     api_url: str,
     *,
     base_output_dir: Path | None = None,
-    extract_fps: float = _FPS,
-    skip_slam: bool = False,
-    conf_threshold: float = _DEFAULT_CONF_THRESHOLD,
-    min_disparity: float = _DEFAULT_MIN_DISPARITY,
-) -> dict[str, Path | str | bool]:
+) -> tuple[Path, Path, str]:
     """
-    1. GET ``api_url`` (scan-artifacts JSON).
-    2. Download ``data[*].video`` (first artifact with a video URL).
-    3. Save under ``{timestamp}_{projectId}/`` (``projectId`` from the URL query).
-    4. Extract frames at ``extract_fps`` into ``images/`` under that folder.
-    5. Run ``main.py`` from the repo root with ``--vis_map``, logging, and SLAM hyperparameters
-       (see implementation for the full argument list). Poses and related logs are written under
-       the project folder via ``--log_path <project_dir>/poses.txt``.
+    GET ``api_url`` (scan-artifacts JSON), resolve ``projectId`` from the query string,
+    create ``{timestamp}_{projectId}/`` under ``base_output_dir``, and download the first
+    ``data[*].video`` URL into that folder.
 
     Parameters
     ----------
@@ -164,26 +160,21 @@ def run_studiox_scan_pipeline(
         e.g. ``https://api.studioxlowes.com/spatial/v1/scan-artifacts?projectId=PRJ-Q2W9SL836``
     base_output_dir
         Parent directory for ``{timestamp}_{projectId}``. Defaults to the current working directory.
-    extract_fps
-        Target sampling rate in Hz for frame extraction with OpenCV (default 2).
-    skip_slam
-        If True, only download video and extract frames.
-    conf_threshold, min_disparity
-        Passed to ``main.py``. If the first SLAM run fails, one retry uses
-        ``conf_threshold`` 25 and ``min_disparity`` 20.
 
     Returns
     -------
-    dict with keys: ``output_dir``, ``video_path``, ``images_dir``, ``project_id``,
-    and ``slam_retried`` (True if the first SLAM run failed and the retry succeeded).
+    output_dir
+        ``{timestamp}_{projectId}/`` directory that will contain the video (and typically ``images/``).
+    video_path
+        Path to the downloaded video file.
+    project_id
+        From the ``projectId`` query parameter on ``api_url``.
     """
     project_id = _project_id_from_scan_artifacts_url(api_url)
     parent = (base_output_dir or Path.cwd()).resolve()
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = parent / f"{ts}_{project_id}"
-    images_dir = out_dir / "images"
     out_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
 
     r = requests.get(api_url, timeout=120)
     r.raise_for_status()
@@ -199,6 +190,65 @@ def run_studiox_scan_pipeline(
             for chunk in vr.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
+
+    return out_dir, video_path, project_id
+
+
+def run_studiox_scan_pipeline(
+    video_path: Path | str,
+    project_id: str,
+    *,
+    output_dir: Path | None = None,
+    extract_fps: float = _FPS,
+    skip_slam: bool = False,
+    conf_threshold: float = _DEFAULT_CONF_THRESHOLD,
+    min_disparity: float = _DEFAULT_MIN_DISPARITY,
+) -> dict[str, Path | str | bool]:
+    """
+    1. Ensure ``output_dir`` exists (default: parent directory of ``video_path``).
+    2. Extract frames at ``extract_fps`` into ``images/`` under that folder.
+    3. Run ``main.py`` from the repo root with ``--vis_map``, logging, and SLAM hyperparameters
+       (see implementation for the full argument list). Poses and related logs are written under
+       the project folder via ``--log_path <project_dir>/poses.txt``.
+
+    Use :func:`download_studiox_scan_video` when you only have a scan-artifacts API URL;
+    when you already have a local video file, call this function directly.
+
+    Parameters
+    ----------
+    video_path
+        Path to the scan video (e.g. ``.mp4``).
+    project_id
+        Used for log naming and ``main.py`` output; must match your project when reproducing
+        Studio X runs (e.g. from the API URL query string).
+    output_dir
+        Working folder for ``images/`` and SLAM outputs. Defaults to ``video_path``'s parent.
+    extract_fps
+        Target sampling rate in Hz for frame extraction with OpenCV (default 2).
+    skip_slam
+        If True, only extract frames (no ``main.py``).
+    conf_threshold, min_disparity
+        Passed to ``main.py``. If the first SLAM run fails, one retry uses
+        ``conf_threshold`` 50 and ``min_disparity`` 20.
+
+    Returns
+    -------
+    dict with keys: ``output_dir``, ``video_path``, ``images_dir``, ``project_id``,
+    and ``slam_retried`` (True if the first SLAM run failed and the retry succeeded).
+    """
+    video_path = Path(video_path).expanduser().resolve()
+    if not video_path.is_file():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    out_dir = (output_dir or video_path.parent).resolve()
+    images_dir = out_dir / "images"
+    # INSERT_YOUR_CODE
+    if images_dir.exists():
+        # Remove the images_dir and all its contents before creating a new one
+        import shutil
+        shutil.rmtree(images_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
 
     _extract_frames_cv2(video_path, images_dir, extract_fps)
 
@@ -261,7 +311,7 @@ def _iter_scan_artifact_urls(links_file: Path) -> list[str]:
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(
-            "Usage: python3 studiox_scan_pipeline.py <links.txt>",
+            "Usage: python3 batch_vggt_pipeline.py <links.txt>",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -274,7 +324,8 @@ if __name__ == "__main__":
     for i, url in enumerate(urls):
         print(f"[{i + 1}/{len(urls)}] {url}", flush=True)
         try:
-            result = run_studiox_scan_pipeline(url)
+            _, video_path, project_id = download_studiox_scan_video(url)
+            result = run_studiox_scan_pipeline(video_path, project_id)
             print(result, flush=True)
             if result.get("slam_retried"):
                 succeeded_after_retry.append(url)

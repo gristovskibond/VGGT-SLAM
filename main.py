@@ -209,7 +209,7 @@ def main():
             print(f"Logging dense point clouds to {args.log_path.replace('.txt', '_logs')}")
             solver.map.save_framewise_pointclouds(solver.graph, args.log_path.replace(".txt", "_logs"))
 
-    input("Press Enter to continue...")
+    #input("Press Enter to continue...")
 
 if __name__ == "__main__":
     main()

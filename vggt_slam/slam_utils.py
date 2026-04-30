@@ -146,6 +146,10 @@ def compute_obb_from_points(points: np.ndarray):
     points = points[np.isfinite(points).all(axis=1)]
     if len(points) == 0:
         raise ValueError("Point cloud is empty or invalid")
+    if len(points) == 1:
+        # np.cov(..., rowvar=False) is 0-D for a single row; PCA is undefined.
+        p = points[0].copy()
+        return p, np.zeros(3, dtype=p.dtype), np.eye(3, dtype=p.dtype)
 
     # 1. Compute centroid
     centroid = points.mean(axis=0)
@@ -160,6 +164,11 @@ def compute_obb_from_points(points: np.ndarray):
     eigvecs = eigvecs[:, order]
 
     rotation = eigvecs  # columns = principal axes (R)
+    # eigh can yield a left-handed frame (det = -1) from arbitrary eigenvector signs.
+    # OBB and Rotation.from_matrix need a proper rotation (det = +1).
+    if np.linalg.det(rotation) < 0:
+        rotation = rotation.copy()
+        rotation[:, 2] *= -1
 
     # 3. Project points to PCA frame
     points_local = centered @ rotation

@@ -5,16 +5,20 @@ import argparse
 
 import numpy as np
 import torch
+from scipy.spatial.transform import Rotation as Rot
 from torchvision.transforms.functional import to_pil_image
 from tqdm.auto import tqdm
 import cv2
 import matplotlib.pyplot as plt
+import open3d as o3d
 
 import vggt_slam.slam_utils as utils
 from vggt_slam.solver import Solver
 from vggt_slam.submap import Submap
 
 from vggt.models.vggt import VGGT
+
+from huggingface_hub import login
 
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
@@ -146,51 +150,99 @@ def main():
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 
 
+    queries = ["door", "walls"]
+    #queries = ["ceiling"]
     if args.run_os:
-        while True:
-            # Prompt user for text input
-            query = input("\nEnter text query or q to quit: ").strip()
-            if len(query) == 0:
-                print("Empty query. Exiting.")
-                return
-            
-            if query == "q":
-                print("Exiting.")
-                return
-            
-            start_time = time.time()
+        all_submap_points = []
+        obb_pose_lines = []
+        start_time = time.time()
+        for query in queries:
+            '''
+            while True:
+                # Prompt user for text input
+                query = input("\nEnter text query or q to quit: ").strip()
+                if len(query) == 0:
+                    print("Empty query. Exiting.")
+                    return
+                
+                if query == "q":
+                    print("Exiting.")
+                    return
+            '''
             text_emb = utils.compute_text_embeddings(clip_model, clip_tokenizer, query)
-            overall_best_score, overall_best_submap_id, overall_best_frame_index = solver.map.retrieve_best_semantic_frame(text_emb)
+            #x, y, z = solver.map.retrieve_best_semantic_frame(text_emb)
+            #print(f"Best semantic frame: {x}, {y}, {z}")
+            
+            matches = solver.map.retrieve_all_semantic_frames(text_emb)
+            if not matches:
+                print("No frames with semantic score above 0.8.")
+                print("Time taken for query:", time.time() - start_time)
+                continue
 
-            found_submap = solver.map.get_submap(overall_best_submap_id)
-
-            # Display image
-            best_img = found_submap.get_frame_at_index(overall_best_frame_index)
-            print("Score:", overall_best_score)
-            with torch.no_grad():
-                # convert torch image to PIL
-                best_img = to_pil_image(best_img)
-                inference_state = processor.set_image(best_img)
-                output = processor.set_text_prompt(state=inference_state, prompt=query)
-                masks, boxes, scores = output["masks"], output["boxes"], output["scores"]
-                print(f"Found {masks.shape[0]} masks from SAM3 for the prompt '{query}'")
-                print("Scores:", scores.cpu().numpy())
-
-            print("Time taken for query:", time.time() - start_time)
-
-            masked_img = utils.overlay_masks(best_img, masks)
-            masked_img.show()
-
-            for i in range(masks.shape[0]):
-                mask = masks[i].cpu().numpy()
-                obb_center, obb_extent, obb_rotation = utils.compute_obb_from_points(found_submap.get_points_in_mask(overall_best_frame_index, mask, solver.graph))
-                solver.viewer.visualize_obb(
-                    center=obb_center,
-                    extent=obb_extent,
-                    rotation=obb_rotation,
-                    color=(255, 0, 0),
-                    line_width=8.0,
+            time_str = time.strftime("%Y%m%d_%H%M%S")
+            for m_idx, (sem_score, submap_id, frame_index) in enumerate(matches):
+                found_submap = solver.map.get_submap(submap_id)
+                best_img = found_submap.get_frame_at_index(frame_index)
+                print(
+                    f"Match {m_idx + 1}/{len(matches)} — submap {submap_id}, frame {frame_index}, score: {sem_score:.4f}"
                 )
+                with torch.no_grad():
+                    best_img = to_pil_image(best_img)
+                    inference_state = processor.set_image(best_img)
+                    output = processor.set_text_prompt(state=inference_state, prompt=query)
+                    masks, boxes, scores = output["masks"], output["boxes"], output["scores"]
+                    print(f"  SAM3 masks for this frame: {masks.shape[0]} for '{query}'")
+                    print("  SAM3 scores:", scores.cpu().numpy())
+
+                
+                #masked_img = utils.overlay_masks(best_img, masks)
+                #masked_img.show()
+                #masked_img.save(f"masked_img_{time_str}_{m_idx}.png")
+
+                for i in range(masks.shape[0]):
+                    mask = masks[i].cpu().numpy()
+                    submap_points = found_submap.get_points_in_mask(frame_index, mask, solver.graph)
+                    if submap_points.size:
+                        all_submap_points.append(submap_points)
+                        
+                        obb_center, obb_extent, obb_rotation = utils.compute_obb_from_points(
+                            submap_points
+                        )
+                        rotvec = Rot.from_matrix(obb_rotation).as_rotvec()
+                        row = np.concatenate(
+                            [obb_center.ravel(), obb_extent.ravel(), rotvec.ravel()]
+                        )
+                        obb_pose_lines.append(" ".join(f"{v:.18g}" for v in row))
+                        print("obb_center", obb_center)
+                        print("obb_extent", obb_extent)
+                        print("obb_rotation", obb_rotation)
+                        
+                        '''
+                        solver.viewer.visualize_obb(
+                            center=obb_center,
+                            extent=obb_extent,
+                            rotation=obb_rotation,
+                            color=(255, 0, 0),
+                            line_width=8.0,
+                        )
+                        '''
+
+        if obb_pose_lines:
+            obb_path = args.log_path.replace(".txt", "_walls_obbs.txt")
+            with open(obb_path, "w", encoding="ascii") as f:
+                f.write("\n".join(obb_pose_lines) + "\n")
+            print(f"Wrote {len(obb_pose_lines)} OBB lines to {obb_path}")
+
+        if all_submap_points:
+            merged = np.vstack(all_submap_points)
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(merged.astype(np.float64))
+            #out_ply = f"query_points_{time_str}.ply"
+            out_ply = args.log_path.replace(".txt", "_walls.ply")
+            o3d.io.write_point_cloud(out_ply, pcd)
+            print(f"Saved {merged.shape[0]} world-frame points to {out_ply}")
+
+        print("Time taken for query:", time.time() - start_time)
 
     if not args.vis_map:
         # just show the map after all submaps have been processed
@@ -209,7 +261,7 @@ def main():
             print(f"Logging dense point clouds to {args.log_path.replace('.txt', '_logs')}")
             solver.map.save_framewise_pointclouds(solver.graph, args.log_path.replace(".txt", "_logs"))
 
-    input("Press Enter to continue...")
+    #input("Press Enter to continue...")
 
 if __name__ == "__main__":
     main()

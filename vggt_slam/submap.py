@@ -248,6 +248,8 @@ class Submap:
     def get_points_in_mask(self, frame_index, mask, graph):
         points = self.get_points_list_in_world_frame(graph)[0][frame_index]
         points_flat = points.reshape(-1, 3)
-        mask_flat = mask.reshape(-1)
-        points_in_mask = points_flat[mask_flat]
+        mask_flat = mask.reshape(-1).astype(bool)
+        conf_mask = self.conf_masks[frame_index].reshape(-1) > self.conf_threshold
+        combined = mask_flat & conf_mask
+        points_in_mask = points_flat[combined]
         return points_in_mask

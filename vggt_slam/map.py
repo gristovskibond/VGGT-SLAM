@@ -39,6 +39,22 @@ class GraphMap:
     def get_latest_submap(self, ignore_loop_closure_submaps=False):
         return self.get_submap(self.get_largest_key(ignore_loop_closure_submaps))
 
+    def retrieve_all_semantic_frames(self, query_text_vector, score_threshold=0.1):
+        """Return all (score, submap_id, frame_index) with cosine similarity above threshold."""
+        results = []
+        sorted_keys = sorted(self.submaps.keys())
+        for submap_key in sorted_keys:
+            submap = self.submaps[submap_key]
+            if submap.get_lc_status():
+                continue
+            submap_embeddings = submap.get_all_semantic_vectors()
+            for frame_index, embedding in enumerate(submap_embeddings):
+                score = cosine_similarity(embedding, query_text_vector)
+                if score > score_threshold:
+                    results.append((float(score), submap_key, frame_index))
+        results.sort(key=lambda x: x[0], reverse=True)
+        return results
+
     def retrieve_best_semantic_frame(self, query_text_vector):
         overall_best_score = 0.0
         overall_best_submap_id = 0

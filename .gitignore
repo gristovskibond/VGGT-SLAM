@@ -31,6 +31,9 @@ __pycache__/
 *.text
 *.pcd
 *.json
+*.png
+*.mp4
+*.ply
 
 datasets
 logs

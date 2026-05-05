@@ -144,12 +144,14 @@ def compute_obb_from_points(points: np.ndarray):
 
     # Remove NaN/inf if any
     points = points[np.isfinite(points).all(axis=1)]
-    if len(points) == 0:
-        raise ValueError("Point cloud is empty or invalid")
-    if len(points) == 1:
+    #if len(points) == 0:
+    #    raise ValueError("Point cloud is empty or invalid")
+    if len(points) < 100:
         # np.cov(..., rowvar=False) is 0-D for a single row; PCA is undefined.
-        p = points[0].copy()
-        return p, np.zeros(3, dtype=p.dtype), np.eye(3, dtype=p.dtype)
+        print("Point cloud is too small to compute OBB, returning center of points")
+        return None, None, None, None
+        #p = points[0].copy()
+        #return p, np.zeros(3, dtype=p.dtype), np.eye(3, dtype=p.dtype)
 
     # 1. Compute centroid
     centroid = points.mean(axis=0)
@@ -160,6 +162,7 @@ def compute_obb_from_points(points: np.ndarray):
 
     # Eigen decomposition (sorted by eigenvalue descending)
     eigvals, eigvecs = np.linalg.eigh(cov)
+    smallest_eigval = eigvals.min()
     order = np.argsort(eigvals)[::-1]
     eigvecs = eigvecs[:, order]
 
@@ -182,7 +185,7 @@ def compute_obb_from_points(points: np.ndarray):
     center_local = 0.5 * (min_corner + max_corner)
     center_world = centroid + center_local @ rotation.T
 
-    return center_world, extent, rotation
+    return center_world, extent, rotation, smallest_eigval
 
 def overlay_masks(image, masks):
     image = image.convert("RGBA")

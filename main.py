@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 import cv2
 import matplotlib.pyplot as plt
 import open3d as o3d
+import os
 
 import vggt_slam.slam_utils as utils
 from vggt_slam.solver import Solver
@@ -19,6 +20,13 @@ from vggt_slam.submap import Submap
 from vggt.models.vggt import VGGT
 
 from huggingface_hub import login
+
+if not os.getenv("SAM_API_KEY"):
+    print("ERROR: SAM_API_KEY environment variable is not set.")
+    print("Please set SAM_API_KEY to use the SAM model.")
+
+sam_api_key = os.getenv("SAM_API_KEY")
+login(sam_api_key)
 
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
@@ -150,7 +158,7 @@ def main():
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 
 
-    queries = ["door", "walls"]
+    queries = ["walls"]
     #queries = ["ceiling"]
     if args.run_os:
         all_submap_points = []
@@ -205,27 +213,26 @@ def main():
                     if submap_points.size:
                         all_submap_points.append(submap_points)
                         
-                        obb_center, obb_extent, obb_rotation = utils.compute_obb_from_points(
+                        obb_center, obb_extent, obb_rotation, smallest_eigval = utils.compute_obb_from_points(
                             submap_points
                         )
-                        rotvec = Rot.from_matrix(obb_rotation).as_rotvec()
-                        row = np.concatenate(
-                            [obb_center.ravel(), obb_extent.ravel(), rotvec.ravel()]
-                        )
-                        obb_pose_lines.append(" ".join(f"{v:.18g}" for v in row))
-                        print("obb_center", obb_center)
-                        print("obb_extent", obb_extent)
-                        print("obb_rotation", obb_rotation)
-                        
-                        '''
-                        solver.viewer.visualize_obb(
-                            center=obb_center,
-                            extent=obb_extent,
-                            rotation=obb_rotation,
-                            color=(255, 0, 0),
-                            line_width=8.0,
-                        )
-                        '''
+                        if obb_center is not None:
+                            rotvec = Rot.from_matrix(obb_rotation).as_rotvec()
+                            print("about to concatenate")
+                            print(smallest_eigval)
+                            #print(type(smallest_eigval))
+                            #print(smallest_eigval.type())
+                            row = np.concatenate(
+                                [obb_center.ravel(), obb_extent.ravel(), rotvec.ravel(), np.array([smallest_eigval])]
+                            )
+                            print("concatenated")
+                            obb_pose_lines.append(" ".join(f"{v:.18g}" for v in row))
+                            print("obb_center", obb_center)
+                            print("obb_extent", obb_extent)
+                            print("obb_rotation", obb_rotation)
+                            print("smallest_eigval", smallest_eigval)
+                        else:
+                            print("Point cloud is too small to compute OBB")
 
         if obb_pose_lines:
             obb_path = args.log_path.replace(".txt", "_walls_obbs.txt")

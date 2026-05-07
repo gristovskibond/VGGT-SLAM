@@ -218,19 +218,14 @@ def main():
                         )
                         if obb_center is not None:
                             rotvec = Rot.from_matrix(obb_rotation).as_rotvec()
-                            print("about to concatenate")
-                            print(smallest_eigval)
-                            #print(type(smallest_eigval))
-                            #print(smallest_eigval.type())
                             row = np.concatenate(
                                 [obb_center.ravel(), obb_extent.ravel(), rotvec.ravel(), np.array([smallest_eigval])]
                             )
-                            print("concatenated")
                             obb_pose_lines.append(" ".join(f"{v:.18g}" for v in row))
-                            print("obb_center", obb_center)
-                            print("obb_extent", obb_extent)
-                            print("obb_rotation", obb_rotation)
-                            print("smallest_eigval", smallest_eigval)
+                            #print("obb_center", obb_center)
+                            #print("obb_extent", obb_extent)
+                            #print("obb_rotation", obb_rotation)
+                            #print("smallest_eigval", smallest_eigval)
                         else:
                             print("Point cloud is too small to compute OBB")
 

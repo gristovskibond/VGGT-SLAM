@@ -163,6 +163,8 @@ def main():
     if args.run_os:
         all_submap_points = []
         obb_pose_lines = []
+        wall_segment_lines = []
+        point_cloud_offset = 0
         start_time = time.time()
         for query in queries:
             '''
@@ -190,6 +192,8 @@ def main():
             time_str = time.strftime("%Y%m%d_%H%M%S")
             for m_idx, (sem_score, submap_id, frame_index) in enumerate(matches):
                 found_submap = solver.map.get_submap(submap_id)
+                frame_ids = found_submap.get_frame_ids()
+                frame_number = frame_ids[frame_index]
                 best_img = found_submap.get_frame_at_index(frame_index)
                 print(
                     f"Match {m_idx + 1}/{len(matches)} — submap {submap_id}, frame {frame_index}, score: {sem_score:.4f}"
@@ -211,6 +215,13 @@ def main():
                     mask = masks[i].cpu().numpy()
                     submap_points = found_submap.get_points_in_mask(frame_index, mask, solver.graph)
                     if submap_points.size:
+                        n_pts = submap_points.shape[0]
+                        p_start = point_cloud_offset
+                        p_end = point_cloud_offset + n_pts - 1
+                        point_cloud_offset += n_pts
+                        wall_segment_lines.append(
+                            f"{p_start} {p_end} {frame_number:g} {i}"
+                        )
                         all_submap_points.append(submap_points)
                         
                         obb_center, obb_extent, obb_rotation, smallest_eigval = utils.compute_obb_from_points(
@@ -243,6 +254,13 @@ def main():
             out_ply = args.log_path.replace(".txt", "_walls.ply")
             o3d.io.write_point_cloud(out_ply, pcd)
             print(f"Saved {merged.shape[0]} world-frame points to {out_ply}")
+
+            seg_path = args.log_path.replace(".txt", "_walls_segments.txt")
+            with open(seg_path, "w", encoding="ascii") as f:
+                f.write("\n".join(wall_segment_lines) + "\n")
+            print(
+                f"Wrote {len(wall_segment_lines)} segment lines (point_start point_end frame_number wall_number) to {seg_path}"
+            )
 
         print("Time taken for query:", time.time() - start_time)
 

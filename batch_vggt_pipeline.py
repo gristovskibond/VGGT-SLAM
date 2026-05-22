@@ -10,6 +10,7 @@ Frames are sampled with OpenCV (``cv2``) at a fixed output frame rate.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ _FPS = 2.0
 # Second attempt after main.py fails on the default thresholds.
 _SLAM_RETRY_CONF_THRESHOLD = 50.0
 _SLAM_RETRY_MIN_DISPARITY = 20.0
+_DEFAULT_IMAGE_RESOLUTION = 512
 
 
 def _run_slam_subprocess(
@@ -39,20 +41,19 @@ def _run_slam_subprocess(
     *,
     conf_threshold: float,
     min_disparity: float,
+    image_resolution: int = _DEFAULT_IMAGE_RESOLUTION,
 ) -> None:
     slam = subprocess.run(
         [
             "python3",
             str(main_py),
+            "--image_resolution",
+            str(image_resolution),
             "--image_folder",
             str(images_dir),
-            "--max_loops",
-            "1",
-            #"--vis_map",
+            "--use_all_frames",
             "--log_results",
             "--skip_dense_log",
-            "--submap_size",
-            "200",
             "--min_disparity",
             str(min_disparity),
             "--conf_threshold",
@@ -205,6 +206,7 @@ def run_studiox_scan_pipeline(
     skip_slam: bool = False,
     conf_threshold: float = _DEFAULT_CONF_THRESHOLD,
     min_disparity: float = _DEFAULT_MIN_DISPARITY,
+    image_resolution: int = _DEFAULT_IMAGE_RESOLUTION,
 ) -> dict[str, Path | str | bool]:
     """
     1. Ensure ``output_dir`` exists (default: parent directory of ``video_path``).
@@ -232,6 +234,8 @@ def run_studiox_scan_pipeline(
     conf_threshold, min_disparity
         Passed to ``main.py``. If the first SLAM run fails, one retry uses
         ``conf_threshold`` 50 and ``min_disparity`` 20.
+    image_resolution
+        Passed to ``main.py`` (default 512; must be divisible by 16).
 
     Returns
     -------
@@ -268,6 +272,7 @@ def run_studiox_scan_pipeline(
                 project_id,
                 conf_threshold=conf_threshold,
                 min_disparity=min_disparity,
+                image_resolution=image_resolution,
             )
         except RuntimeError as e:
             print(
@@ -283,6 +288,7 @@ def run_studiox_scan_pipeline(
                 project_id,
                 conf_threshold=_SLAM_RETRY_CONF_THRESHOLD,
                 min_disparity=_SLAM_RETRY_MIN_DISPARITY,
+                image_resolution=image_resolution,
             )
             slam_retried = True
 

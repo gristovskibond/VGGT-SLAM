@@ -39,4 +39,16 @@ cd ..
 echo "Installing current repo..."
 pip install -e .
 
+# 7. Clone and install vggt-omega
+echo "Cloning and installing vggt-omega..."
+cd third_party
+git clone --branch feature/bond --depth 1 https://github.com/bond-studio-ai/vggt-omega.git
+echo "Downloading VGGT-Omega model weights..."
+cd vggt-omega
+curl -fsSL https://shower-detection.s3.us-west-2.amazonaws.com/vggt_omega_model.tar -o vggt_omega_model.tar
+tar -xf vggt_omega_model.tar
+rm -f vggt_omega_model.tar
+pip install -e .
+cd ../..
+
 echo "Installation Complete"

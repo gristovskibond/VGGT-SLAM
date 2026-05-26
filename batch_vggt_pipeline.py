@@ -24,7 +24,7 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parent
 
 # Default thresholds for main.py
-_DEFAULT_CONF_THRESHOLD = 10.0
+_DEFAULT_CONF_THRESHOLD = 15.0
 _DEFAULT_MIN_DISPARITY = 10.0
 _FPS = 2.0
 # Second attempt after main.py fails on the default thresholds.

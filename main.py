@@ -26,8 +26,7 @@ sam_api_key = os.getenv("SAM_API_KEY")
 if sam_api_key:
     login(sam_api_key)
 
-#VGGT_OMEGA_CHECKPOINT = "/home/ubuntu/output/vggt-all/vggt-omega/models/vggt_omega_1b_512.pt"
-VGGT_OMEGA_CHECKPOINT = "/app/vggt-omega/models/vggt_omega_1b_512.pt"
+VGGT_OMEGA_CHECKPOINT = "/app/VGGT-SLAM/third_party/vggt-omega/vggt_omega_model/vggt_omega_1b_512.pt"
 
 parser = argparse.ArgumentParser(
     description="VGGT-SLAM: single-shot VGGT-Omega reconstruction"

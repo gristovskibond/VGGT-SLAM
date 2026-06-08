@@ -190,7 +190,7 @@ def main():
     if args.vis_map:
         solver.visualize_map()
 
-    queries = ["walls"]
+    queries = ["walls", "window", "mirror", "door"]
     if args.run_os:
         all_submap_points = []
         obb_pose_lines = []
